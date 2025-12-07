@@ -15,9 +15,9 @@ int UNGRIP = 100;
 #define SERVO_MAX   2500
 
 /********** PID **********/
-double kP = 18;
-double kI = 120;
-double kD = 0.82;
+double kP = 32;
+double kI = 200;
+double kD = 0.4;
 
 String serialInput = "";
 double setpoint = 0;
@@ -57,14 +57,14 @@ float rawAngle = 0.0;
 
 volatile bool IMUdataReady = false;
 
-float correctionOffset = -11.2;
+float correctionOffset = -10.8;
 float throttleOffset = 0.0;
 
 float angleV = 0;
 float turnV = 0;
 float deadband = 0;
 
-float motor_min_speed = 86;
+float motor_min_speed = 60;
 float throttle_fwd = 2.0;
 float throttle_bwd = -2.0;
 
@@ -72,7 +72,12 @@ float easing = 1;
 float steering_gain = 42;
 
 float right_motor_gain = 1.0;
-float left_motor_gain = 0.76;
+float left_motor_gain = 1.0;
+
+float ax_offset = 0.0;
+float velX = 0.0;
+float distX = 0.0;
+unsigned long lastTimelinear = 0;
 
 bool btnForward = false;
 bool btnBackward = false;
@@ -142,22 +147,39 @@ void readPIDfromSerial() {
     else if (cmd.equalsIgnoreCase("LIFTDOWN")) { LIFT_DOWN = num; Serial.println("Set LIFT_DOWN to " + String(LIFT_DOWN)); }
     else if (cmd.equalsIgnoreCase("GIPC")) { gipCompensation = num; Serial.println("Updated GIPC = " + String(gipCompensation)); }
     else if (cmd.equalsIgnoreCase("GRPCD")) { GRIP_COMPENSATION_DELAY = (unsigned long)num; Serial.println("Updated GRPCD = " + String(GRIP_COMPENSATION_DELAY)); }
+    else if (cmd.equalsIgnoreCase("hold")) { 
+      servoGripPulse = map(GRIP,   0, 180, SERVO_MIN, SERVO_MAX);
+      activateGripCompe = true;
+    }
+    else if (cmd.equalsIgnoreCase("release")) { 
+      servoGripPulse = map(UNGRIP, 0, 180, SERVO_MIN, SERVO_MAX); 
+      activateGripCompe = false;
+    }
     else { Serial.println("Unknown command!"); }
   }
 }
 
 /********** MPU6050 READING **********/
 void readMPU6050() {
+  unsigned long now = micros();
+  float dt = (now - lastTimelinear) / 1e6;
+  lastTimelinear = now;
+
   sensors_event_t a, g, temp;
   mpu.getEvent(&a, &g, &temp);
 
-  float dt = 0.005;
+  float dt_constant = 0.005;
 
   gyroRate = g.gyro.y * 57.296;
   accAngle = -atan2(a.acceleration.x, a.acceleration.z) * 57.296;
 
-  rawAngle = 0.98 * (rawAngle + gyroRate * dt) + 0.02 * accAngle;
+  rawAngle = 0.98 * (rawAngle + gyroRate * dt_constant) + 0.02 * accAngle;
   pitch = rawAngle;
+
+  float ax = a.acceleration.x - ax_offset;
+  velX += ax * dt;
+  distX += velX * dt;
+  velX *= 0.98;
 }
 
 /********** MOTOR CONTROL **********/
@@ -359,11 +381,15 @@ void loop() {
     double speedLeft  = (output * left_motor_gain)  + turnV;
     double speedRight = (output * right_motor_gain) - turnV;
 
-    if (speedRight > 0) speedRight += motor_min_speed;
-    else if (speedRight < 0) speedRight -= motor_min_speed;
+    if (abs(speedRight) < motor_min_speed){
+      int sign = (speedRight > 0) ? 1 : -1;
+      speedLeft = speedRight * sign;
+    }
 
-    if (speedLeft > 0) speedLeft += motor_min_speed;
-    else if (speedLeft < 0) speedLeft -= motor_min_speed;
+    if (abs(speedLeft) < motor_min_speed){
+      int sign = (speedLeft > 0) ? 1 : -1;
+      speedLeft = speedLeft * sign;
+    }
 
     if (input < 12 && input > -38) {
 
@@ -383,5 +409,5 @@ void loop() {
   Serial.print(",");
   Serial.print(setpoint);
   Serial.print(",");
-  Serial.println(pitch);
+  Serial.println(distX);
 }
