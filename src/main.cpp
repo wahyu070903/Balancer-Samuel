@@ -15,9 +15,17 @@ int UNGRIP = 100;
 #define SERVO_MAX   2500
 
 /********** PID **********/
-double kP = 32;
-double kI = 200;
-double kD = 0.4;
+double Kp_used = 0;
+double Ki_used = 0;
+double Kd_used = 0;
+
+double Kp = 70;
+double Ki = 220;
+double Kd = 0.92;
+
+double Kp2 = 32;
+double Ki2 = 0;
+double Kd2 = 0.4;
 
 String serialInput = "";
 double setpoint = 0;
@@ -57,7 +65,7 @@ float rawAngle = 0.0;
 
 volatile bool IMUdataReady = false;
 
-float correctionOffset = -10.8;
+float correctionOffset = -10;
 float throttleOffset = 0.0;
 
 float angleV = 0;
@@ -65,7 +73,7 @@ float turnV = 0;
 float deadband = 0;
 
 float motor_min_speed = 60;
-float throttle_fwd = 2.0;
+float throttle_fwd = 4.0;
 float throttle_bwd = -2.0;
 
 float easing = 1;
@@ -83,6 +91,7 @@ bool btnForward = false;
 bool btnBackward = false;
 bool btnLeft = false;
 bool btnRight = false;
+bool throttlePressed = false;
 
 bool activateGripCompe = false;
 
@@ -93,6 +102,10 @@ float gipCompensation = 10.0;
 float gripCompApplied = 0.0;
 float gripEasing = 0.01;
 bool compeGrow = false;       
+
+float lastreadangle = 0.0;
+float oscillationThreshold = 7.2;
+
 
 hw_timer_t* servoTimer = NULL;
 portMUX_TYPE servoMux = portMUX_INITIALIZER_UNLOCKED;
@@ -125,13 +138,13 @@ void readPIDfromSerial() {
 
     double num = val.toFloat();
 
-    if (cmd.equalsIgnoreCase("KP"))       { kP = num; Serial.println("Updated KP = " + String(kP)); }
-    else if (cmd.equalsIgnoreCase("KI")) { kI = num; Serial.println("Updated KI = " + String(kI)); }
-    else if (cmd.equalsIgnoreCase("KD")) { kD = num; Serial.println("Updated KD = " + String(kD)); }
+    if (cmd.equalsIgnoreCase("KP"))       { Kp = num; Serial.println("Updated KP = " + String(Kp)); }
+    else if (cmd.equalsIgnoreCase("KI")) { Ki = num; Serial.println("Updated KI = " + String(Ki)); }
+    else if (cmd.equalsIgnoreCase("KD")) { Kd = num; Serial.println("Updated KD = " + String(Kd)); }
     else if (cmd.equalsIgnoreCase("SHOW")) {
-      Serial.print("KP = "); Serial.println(kP);
-      Serial.print("KI = "); Serial.println(kI);
-      Serial.print("KD = "); Serial.println(kD);
+      Serial.print("KP = "); Serial.println(Kp);
+      Serial.print("KI = "); Serial.println(Ki);
+      Serial.print("KD = "); Serial.println(Kd);
     }
     else if (cmd.equalsIgnoreCase("OF"))  { correctionOffset = num; Serial.println("Updated OF = " + String(correctionOffset)); }
     else if (cmd.equalsIgnoreCase("DB"))  { deadband = num; Serial.println("Updated DB = " + String(deadband)); }
@@ -247,10 +260,20 @@ void updateTurn() {
   if (btnRight) turnV =  steering_gain;
 }
 
+unsigned long lastthrottleUpdate = 0;
 void updateTrim() {
   if (!btnForward && !btnBackward) {
     throttleOffset = 0.0;
+    if(throttlePressed){
+      unsigned long now = millis();
+      if(now - lastthrottleUpdate > 300){
+        lastthrottleUpdate = now;
+        throttlePressed = false;
+      }
+    }
     return;
+  }else{
+    throttlePressed = true;
   }
 
   float target = btnForward ? throttle_fwd : throttle_bwd;
@@ -338,6 +361,7 @@ void setup() {
   servoGripPulse = map(UNGRIP,    0, 180, SERVO_MIN, SERVO_MAX);
 }
 
+unsigned long lastTimeOsci = 0;
 /********** LOOP **********/
 void loop() {
   readPIDfromSerial();
@@ -357,6 +381,28 @@ void loop() {
     prevActivateGripCompe = activateGripCompe;
 
     input = pitch;
+    float angleDifference = fabs(input - lastreadangle);
+    unsigned long now_osci = millis();
+    if(now_osci - lastTimeOsci > 500){
+      lastreadangle = input;
+      lastTimeOsci = now_osci;
+    }
+
+    // if (angleDifference > oscillationThreshold || throttlePressed) {
+    if(throttlePressed) {
+        Kp_used = Kp2;
+        Ki_used = Ki2;
+        Kd_used = Kd2;
+        digitalWrite(LED_FALL, HIGH);
+        integral = 0;
+    }else{
+        Kp_used = Kp;
+        Ki_used = Ki;
+        Kd_used = Kd;
+        digitalWrite(LED_FALL, LOW);
+        integral = 0;
+    }
+
     setpoint = correctionOffset + throttleOffset;
 
     if (activateGripCompe) {
@@ -372,7 +418,7 @@ void loop() {
 
     double derivative = (error - lastError) / (LOOP_TIME_MS / 1000.0);
 
-    output = kP * error + kI * integral + kD * derivative;
+    output = Kp_used * error + Ki_used * integral + Kd_used * derivative;
 
     lastError = error;
 
